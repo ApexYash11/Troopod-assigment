@@ -21,7 +21,9 @@ OPENROUTER_API_KEY = _get_required_env("OPENROUTER_API_KEY")
 OPENROUTER_MODEL = _get_required_env("OPENROUTER_MODEL")
 
 
-AGENT1_SYSTEM_PROMPT = "You are an ad analyst. Return JSON only. No preamble. No markdown."
+AGENT1_SYSTEM_PROMPT = "You are an expert ad analyst. Extract structured data from ad creatives. Return raw JSON only. No markdown. No explanation. No code blocks."
+
+AGENT2_SYSTEM_PROMPT = "You are a senior CRO specialist with 10 years experience. You personalise landing pages to match ad creatives. Increase message match between ad and page. Return raw JSON only. No markdown. No explanation. No code blocks. Critical rule: Only use claims, offers, and benefits that appear in the ad data. Never invent new features, prices, or guarantees."
 
 
 def _extract_message_text(response: Any) -> str:
@@ -57,6 +59,55 @@ def _parse_json_response(response_text: str) -> dict:
         if start != -1 and end != -1 and end > start:
             return json.loads(response_text[start : end + 1])
         raise
+
+
+def _call_agent_with_retry(
+    client: OpenAI,
+    model: str,
+    system_prompt: str,
+    user_content: Any,
+    max_tokens: int,
+) -> dict:
+    """
+    Call agent with JSON parsing. On parse failure, retry once with stricter prompt.
+    On second failure, return fallback error dict.
+    """
+    response_text = ""
+    
+    # First attempt
+    try:
+        response = _run_with_system_fallback(
+            client=client,
+            model=model,
+            system_prompt=system_prompt,
+            user_content=user_content,
+            max_tokens=max_tokens,
+        )
+        response_text = _extract_message_text(response)
+        return _parse_json_response(response_text)
+    except json.JSONDecodeError:
+        # First failure: retry with stricter prompt
+        pass
+    except Exception:
+        raise
+    
+    # Retry with stricter prompt
+    stricter_system = system_prompt + " Return ONLY valid JSON. No additional text. No markdown. No preamble."
+    try:
+        response = _run_with_system_fallback(
+            client=client,
+            model=model,
+            system_prompt=stricter_system,
+            user_content=user_content,
+            max_tokens=max_tokens,
+        )
+        response_text = _extract_message_text(response)
+        return _parse_json_response(response_text)
+    except json.JSONDecodeError:
+        # Second failure: return fallback error dict
+        return {"error": "Failed to parse JSON response", "raw": response_text}
+    except Exception as e:
+        return {"error": str(e)}
 
 
 def _image_url_to_data_url(image_url: str) -> str:
@@ -159,52 +210,33 @@ def run_agent1(ad_image_url: str) -> dict:
                 "type": "image_url",
                 "image_url": {"url": image_source},
             },
-            {
-                "type": "text",
-                "text": (
-                    "Extract the following from this ad image and return as compact JSON: "
-                    "headline, offer, cta_text, tone (one word), target_audience"
-                ),
-            },
         ]
 
-    response_text = ""
     try:
-        response = _run_with_system_fallback(
+        user_prompt = (
+            "Analyse this ad creative and return this exact JSON structure:\n"
+            "{\n"
+            "  'headline': 'the main headline or hook of the ad',\n"
+            "  'offer': 'the specific offer, discount, or benefit being promoted',\n"
+            "  'cta_text': 'the call to action text',\n"
+            "  'tone': 'one word only: urgent OR warm OR bold OR playful OR professional',\n"
+            "  'target_audience': 'who this ad is speaking to in 5 words or less'\n"
+            "}\n"
+            "Return only the JSON. Nothing else."
+        )
+        
+        image_content = _user_content_for_image(ad_image_url)
+        image_content.append({"type": "text", "text": user_prompt})
+        
+        return _call_agent_with_retry(
             client=client,
             model=OPENROUTER_MODEL,
             system_prompt=AGENT1_SYSTEM_PROMPT,
-            user_content=_user_content_for_image(ad_image_url),
+            user_content=image_content,
             max_tokens=350,
         )
 
-        response_text = _extract_message_text(response)
-        parsed = _parse_json_response(response_text)
-        return parsed
-
-    except json.JSONDecodeError as first_parse_error:
-        # JSON parse failed; return error with raw response for debugging
-        return {
-            "error": "agent1 parse failed",
-            "raw": response_text,
-            "details": str(first_parse_error),
-        }
-
     except Exception as e:
-        error_text = str(e).lower()
-        image_fetch_related = (
-            "forbidden" in error_text
-            or "no endpoints found that support image input" in error_text
-            or "could not download" in error_text
-            or "image" in error_text and "url" in error_text
-        )
-
-        if image_fetch_related:
-            # Image fetch failed; return error
-            return {
-                "error": f"agent1 failed: {str(e)}",
-            }
-
         return {"error": f"agent1 failed: {str(e)}"}
 
 
@@ -224,37 +256,30 @@ def run_agent2(ad_json: dict, page_content: str) -> dict:
         base_url="https://openrouter.ai/api/v1"
     )
     
-    response_text = ""
     try:
-        user_message = f"""
-Ad Analysis:
-{json.dumps(ad_json, indent=2)}
-
-Landing Page Content:
-{page_content[:2000]}
-
-Generate personalized copy for this landing page based on the ad insights. Return as JSON with: new_h1, new_subhead, new_cta, reasoning (one sentence). Only use claims present in the ad. Do not invent features, prices, or benefits.
-Keep output concise: new_h1 <= 12 words, new_subhead <= 16 words, new_cta <= 6 words, reasoning <= 14 words.
-"""
+        user_message = (
+            f"Ad data: {json.dumps(ad_json, indent=2)}\n\n"
+            f"Current landing page content:\n"
+            f"{page_content[:2000]}\n\n"
+            f"Rewrite only these 3 elements to better match the ad. Keep changes believable "
+            f"and grounded in the ad's actual message. Return this exact JSON:\n"
+            f"{{\n"
+            f"  'new_h1': 'new headline that echoes the ad promise',\n"
+            f"  'new_subhead': 'new subheadline that expands on the ad offer',\n"
+            f"  'new_cta': 'new CTA button text that matches ad action',\n"
+            f"  'reasoning': 'one sentence explaining what you changed and why'\n"
+            f"}}\n"
+            f"Return only the JSON. Nothing else."
+        )
         
-        response = _run_with_system_fallback(
+        return _call_agent_with_retry(
             client=client,
             model=OPENROUTER_MODEL,
-            system_prompt=(
-                "You are a CRO specialist. Return JSON only. No preamble. No markdown. "
-                "Only use claims present in the ad. Do not invent features, prices, or benefits. "
-                "Keep outputs concise to avoid truncation."
-            ),
+            system_prompt=AGENT2_SYSTEM_PROMPT,
             user_content=user_message,
             max_tokens=220,
         )
 
-        response_text = _extract_message_text(response)
-        parsed = _parse_json_response(response_text)
-        return parsed
-        
-    except json.JSONDecodeError:
-        return {"error": "agent2 parse failed", "raw": response_text}
     except Exception as e:
         return {"error": f"agent2 failed: {str(e)}"}
 

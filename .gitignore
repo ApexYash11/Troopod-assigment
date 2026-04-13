@@ -1,11 +1,26 @@
+# Python
 venv/
 .env
+.env.local
+.env.*.local
 __pycache__/
-*.pyc 
+*.pyc
+*.pyo
+*.egg-info/
 
+# Node / Frontend
 node_modules/
 dist/
-next.config.js
 .next/
 *.tsbuildinfo
 frontend/*.tsbuildinfo
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db
