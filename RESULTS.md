@@ -179,11 +179,12 @@ Total per request: ~800-1,250 tokens
 
 ### Test 5: Error Scenario - Scraper Failure
 
-**Request with invalid landing page URL**:
+**Request with invalid landing page URL**: Some domains (like Nike, Amazon) block the Jina.ai scraper for security reasons.
+
 ```json
 {
   "ad_image_url": "https://raw.githubusercontent.com/github/explore/main/topics/python/python.png",
-  "landing_page_url": "https://nike.com"  // Domain blocks Jina.ai scraper
+  "landing_page_url": "https://nike.com"
 }
 ```
 

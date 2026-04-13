@@ -4,7 +4,7 @@ A full-stack application that analyzes ad creatives and personalizes landing pag
 
 ---
 
-## � Mermaid Diagrams Guide
+## 📊 Mermaid Diagrams Guide
 
 This README includes **12 comprehensive Mermaid diagrams** visualizing system architecture, data flows, and operational logic:
 
@@ -25,7 +25,7 @@ This README includes **12 comprehensive Mermaid diagrams** visualizing system ar
 
 ---
 
-## �📋 System Architecture
+## 📋 System Architecture
 
 ```mermaid
 graph TD
